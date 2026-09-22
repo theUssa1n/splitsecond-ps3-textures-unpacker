@@ -1,0 +1,15 @@
+[package]
+name = "unpack-ss_utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.69"
+rfd = "0.11.4"
+
+[profile.release]
+opt-level = 3
+lto = true 
+codegen-units = 1
+panic = 'abort'
+incremental = false 
