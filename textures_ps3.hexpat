@@ -26,6 +26,12 @@
 // All table offsets are stored relative to the fixed header base, not to 0.
 #define BASE_OFFSET 0x10
 
+// Pointer-base helper: table offsets are stored relative to BASE_OFFSET, not to
+// their parent object. (std::ptr::relative_to_parent is not usable here.)
+fn relative_to_base(auto ptr) {
+    return BASE_OFFSET;
+};
+
 // ---------------------------------------------------------------------------
 // Record (36 bytes / 0x24). Reached through `records_offset` (header-relative).
 //
@@ -82,24 +88,17 @@ struct CatalogEntry {
 //   data_size     0 => streamed catalog: pixel data lives in the sibling
 //                 `.streamtex`, not inline. Non-zero => size in bytes of this
 //                 catalog's raw data section (placed right after the header).
-//   entry_count   number of 12-byte entries for this catalog.
-//   entries_offset offset of the entry array, header-relative.
+//   entry_count   number of 12-byte entries in the catalog's entry array.
+//   entries_offset offset of the entry array, header-relative. Modelled as a
+//                 pointer array so the entries are expanded in place: only the
+//                 4-byte offset is consumed, keeping the 16-byte stride.
 // ---------------------------------------------------------------------------
 struct Catalog {
     u32 data_size      [[comment("0 = streamed (.streamtex sidecar)")]];
     u32 unknown_04;
     u32 entry_count;
-    u32 entries_offset [[comment("header-relative -> CatalogEntry[]")]];
-};
-
-// ---------------------------------------------------------------------------
-// Wrapper used to place a catalog's entry array at its own `entries_offset`.
-// The array is not physically adjacent to the catalog header, and ImHex cannot
-// place a plain array variable inside a loop body, so a templated struct is
-// used to bind the element count to the catalog it belongs to.
-// ---------------------------------------------------------------------------
-struct CatalogEntries<auto N> {
-    CatalogEntry items[N];
+    CatalogEntry *entries[entry_count] : u32
+        [[pointer_base("relative_to_base")]];
 };
 
 // ---------------------------------------------------------------------------
@@ -152,13 +151,6 @@ Ps3Header header @ BASE_OFFSET;
 TextureRecord records[header.record_count] @ (BASE_OFFSET + header.records_offset);
 PtEntry       pt[header.pt_count]            @ (BASE_OFFSET + header.pt_offset);
 Catalog       catalogs[header.catalog_count] @ (BASE_OFFSET + header.catalogs_offset);
-
-// Each catalog's entry array lives at its own `entries_offset`. The array is
-// not physically adjacent to the catalog header, so it is placed explicitly
-// instead of being a struct member (a member would inflate the 16-byte stride).
-for (u32 i = 0, i < header.catalog_count, i += 1) {
-    CatalogEntries<catalogs[i].entry_count> entries @ (BASE_OFFSET + catalogs[i].entries_offset);
-}
 
 // The data sections begin right after the header; the name table (if any) sits
 // after the sum of all catalog data sizes.
