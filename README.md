@@ -1,12 +1,12 @@
 # Split/Second PS3 Texture Unpacking Tools
 
 Tools for extracting textures from the PS3 (big-endian) version of Split/Second.
-They only accept PS3 `.textures` files ("TEXS" magic); PC ("SXET") files are
+They only accept PS3 `.textures` files (`TEXS` magic); PC (`SXET`) files are
 rejected with a clear error.
 
 ## Tools
 
-### 1. unpack-textures-and-streamtex.exe
+### 1. unpack-textures-and-streamtex
 Main tool for high-res textures stored in `.streamtex` files.
 
 - Select both the `.streamtex` file and its matching `.textures` file. The tool
@@ -15,7 +15,7 @@ Main tool for high-res textures stored in `.streamtex` files.
 - Embedded (low-res) textures from `.textures` are written to an `embedded`
   subfolder; high-res `.streamtex` textures go to a `high-res` subfolder.
 
-### 2. untexs.exe
+### 2. untexs
 Extracts low-res embedded textures directly from `.textures` files. It names
 them using the internal ID table, so duplicate names do not overwrite each
 other.
@@ -28,8 +28,8 @@ other.
 - Embedded only: pick `.textures` file(s), then an output folder.
 
 **Command line:**
-- Combined (Full): `./unpack-textures-and-streamtex.exe <streamtex> <textures> <outdir>`
-- Embedded:        `./untexs.exe <textures> [<textures> ...] <outdir>`
+- Combined (Full): `./unpack-textures-and-streamtex <streamtex> <textures> <outdir>`
+- Embedded:        `./untexs <textures> [<textures> ...] <outdir>`
 
 ## Formats & layout
 
@@ -42,3 +42,16 @@ PS3 files are big-endian. Supported texture formats:
 For the full on-disc layout (records, catalogs, embedded data, volume
 swizzle, and the sequential `.streamtex` slot model), see
 `Structural_Comparison.txt` and the header comment in `src/lib.rs`.
+
+## Building
+
+```
+cargo build --release
+```
+
+The two binaries are produced under `target/release/`:
+`unpack-textures-and-streamtex` and `untexs`.
+
+## License
+
+MIT — see `LICENSE`.
