@@ -1,7 +1,7 @@
 Split/Second PS3 .textures - verified structure (reverse-engineered, this tool is PS3-only)
 =======================================================================================
 
-Two catalog layouts
+Two catalog layouts (verified byte-exact on 17 files)
 -----------------------------------------------------
 Model A - track files (docks, Downtown, ...):
   catalog_count == record_count. Catalogs are interleaved PAIRS, one pair per
@@ -99,9 +99,16 @@ derived from the texture that does match.
 Streamtex data
 --------------
 The .streamtex file is raw texture data with no headers. Model B entries
-carry absolute offsets into it; model A files are read sequentially with the
-same 128-byte slot alignment. Extraction is byte-exact against
-Musclecar_09.streamtex (SHA256 of the sliced payloads matches).
+carry absolute offsets into it (128-byte whole-chain slot per face). Model A
+(track) files are read sequentially in catalog order and are packed
+back-to-back with NO alignment padding: each texture occupies exactly its
+full mip chain (mips concatenated), six contiguous chains per cubemap face.
+The 128-byte slot rule above applies only to embedded data sections, not to
+sequential streamtex layout. Verified on airport_test_03: the raw cumulative
+offsets reproduce the on-disc data (visual confirmation plus offset checks),
+and the 1.6 MB tail of the .streamtex file is trailing padding.
+Extraction is byte-exact against Musclecar_09.streamtex (SHA256 of the sliced
+payloads matches).
 
 Names table
 -----------

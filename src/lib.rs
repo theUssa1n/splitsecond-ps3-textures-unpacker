@@ -452,8 +452,8 @@ pub fn extract_embedded_textures(view: &TexturesView) -> Result<Vec<Texture>> {
 /// Streamtex catalogs have no data section of their own; their entries point
 /// into the matching `.streamtex` file. When the entries carry explicit data
 /// offsets they are absolute positions inside that file; when they are all
-/// zero (track files), the data is packed sequentially, each texture in a
-/// 128-byte aligned slot.
+/// zero (track files), the data is packed sequentially, back-to-back, with
+/// no alignment padding between textures.
 pub fn extract_streamtex_textures(
     view: &TexturesView,
     streamtex_bytes: &[u8],
@@ -485,40 +485,77 @@ pub fn extract_streamtex_textures(
     let mut textures = Vec::with_capacity(entries.len());
     let mut running = 0usize;
     for (off, meta) in entries {
-        let chain = if meta.is_volume {
-            volume_region_size(&meta)
-        } else {
-            mip_chain_size(&meta)
-        };
-        let faces = if meta.is_cubemap { 6 } else { 1 };
-        let total = chain * faces;
         let start = if absolute { off } else { running };
-        if start + total > streamtex_bytes.len() {
-            if textures.is_empty() {
-                return Err(anyhow!(
-                    "Streamtex data is missing or too small (need {} bytes at offset {:#x})",
-                    start + total,
-                    start
-                ));
-            }
-            return Ok(textures);
+        if start >= streamtex_bytes.len() {
+            break;
         }
 
-        let bytes = if meta.is_volume {
-            wrap_volume_texture(&meta, &streamtex_bytes[start..start + total])
-        } else {
+        let (bytes, slot_total) = if meta.is_volume {
+            let region = volume_region_size(&meta);
+            let n = region.min(streamtex_bytes.len().saturating_sub(start));
+            (
+                wrap_volume_texture(&meta, &streamtex_bytes[start..start + n]),
+                (region + 127) & !127,
+            )
+        } else if absolute {
+            let chain = mip_chain_size(&meta);
+            let slot = (chain + 127) & !127;
             let mut bytes =
                 create_dds_header(meta.width, meta.height, meta.mips, meta.format, meta.is_cubemap);
-            bytes.extend_from_slice(&streamtex_bytes[start..start + total]);
-            bytes
+            if meta.is_cubemap {
+                for f in 0..6 {
+                    let face_start = start + f * slot;
+                    let n = chain.min(streamtex_bytes.len().saturating_sub(face_start));
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&streamtex_bytes[face_start..face_start + n]);
+                }
+                (bytes, 6 * slot)
+            } else {
+                let n = chain.min(streamtex_bytes.len().saturating_sub(start));
+                bytes.extend_from_slice(&streamtex_bytes[start..start + n]);
+                (bytes, slot)
+            }
+        } else {
+            // Sequential streamtex entries are packed back-to-back with no
+            // alignment padding: each texture occupies exactly its full mip
+            // chain (mips concatenated), six chains per cubemap face.
+            let chain = mip_chain_size(&meta);
+            let face_count = if meta.is_cubemap { 6 } else { 1 };
+            let slot_total = chain * face_count;
+            let mut bytes = Vec::with_capacity(slot_total);
+            'faces: for face in 0..face_count {
+                let face_start = start + face * chain;
+                let Some(face_end) = face_start.checked_add(chain) else {
+                    break 'faces;
+                };
+                if face_end > streamtex_bytes.len() {
+                    break 'faces;
+                }
+                bytes.extend_from_slice(&streamtex_bytes[face_start..face_end]);
+            }
+            if bytes.len() != slot_total {
+                break;
+            }
+            let header = create_dds_header(
+                meta.width,
+                meta.height,
+                meta.mips,
+                meta.format,
+                meta.is_cubemap,
+            );
+            bytes.splice(0..0, header);
+            (bytes, slot_total)
         };
+
         textures.push(Texture {
             name: texture_name(view, &meta),
             bytes,
         });
 
         if !absolute {
-            running = start + ((total + 127) & !127); // slots are 128-byte aligned
+            running = start + slot_total;
         }
     }
 
