@@ -62,12 +62,12 @@ jobs:
       - name: Package (Windows zip)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path staging/* -DestinationPath release/unpack-texs-${{ github.ref_name }}-windows-x86_64.zip
+        run: Compress-Archive -Path staging/* -DestinationPath release/unpack-texs-${{ github.ref_name }}-windows-x64.zip
 
       - name: Package (Linux tar.gz)
         if: runner.os == 'Linux'
         shell: bash
-        run: tar -czf release/unpack-texs-${{ github.ref_name }}-linux-x86_64.tar.gz -C staging .
+        run: tar -czf release/unpack-texs-${{ github.ref_name }}-linux-x64.tar.gz -C staging .
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -82,3 +82,15 @@ jobs:
         with:
           files: release/*
           fail_on_unmatched_files: true
+          body: |
+            ## Downloads
+
+            - **Windows (64-bit):** `unpack-texs-<version>-windows-x64.zip`
+            - **Linux (64-bit):** `unpack-texs-<version>-linux-x64.tar.gz`
+
+            > These builds are 64-bit only and require a 64-bit OS.
+            >
+            > Pick the archive for your system, extract it, and run the
+            > binaries from the command line:
+            > - `unpack-textures-and-streamtex <streamtex> <textures> <outdir>`
+            > - `untexs <textures> ... <outdir>`
