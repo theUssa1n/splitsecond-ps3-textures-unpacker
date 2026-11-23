@@ -4,6 +4,10 @@ Tools for extracting textures from the PS3 (big-endian) version of Split/Second.
 They only accept PS3 `.textures` files (`TEXS` magic); PC (`SXET`) files are
 rejected with a clear error.
 
+> **PS3 vs PC:** this repository targets the PS3 version of the format. For
+> the **PC** version of `.textures`/`.streamtex` (little-endian, DDS payloads),
+> see [TEXembed](https://github.com/theUssa1n/TEXembed).
+
 ## Tools
 
 ### 1. unpack-textures-and-streamtex
