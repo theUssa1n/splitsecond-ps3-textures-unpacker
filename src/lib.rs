@@ -57,9 +57,12 @@ use anyhow::{anyhow, Result};
 //
 // Data section: starts right after the header. Catalog i's data starts at
 // data_start + sum(sizes of catalogs 0..i-1) and is `size` bytes of raw
-// (header-less) texture data. Every texture's slot is the mip chain rounded
-// up to 128 bytes. Cubemap data is 6 face slots of (size / 6) bytes each
-// (each slot: mip chain + padding).
+// (header-less) texture data. DXT textures occupy 128-byte aligned slots
+// (mip chain rounded up to 128 bytes; a cubemap reserves one such slot per
+// face). A8R8G8B8 (0xA5) records instead occupy a dedicated larger allocation
+// slot (observed: 4 MiB / 1024x512, 130,560 / 128x128) whose start holds the
+// linear BGRA mip chain; the slot size only advances the cursor for the next
+// record.
 //
 // Volume (3D) textures store their mip chain differently:
 //   * every mip level is aligned to 128 bytes (not just the whole chain), and
@@ -258,13 +261,18 @@ pub fn make_textures_view(file_bytes: &[u8]) -> Result<TexturesView<'_>> {
     })
 }
 
-/// Bytes per texture block for the console format codes, or 0 for uncompressed
-/// formats (which are counted as 4 bytes per pixel instead).
+/// Bytes per texture block for the console format codes, or 0 for the
+/// uncompressed ARGB format (which is counted as 4 bytes per pixel instead).
+///
+/// Split/Second (PS3) only uses these formats: DXT1 (0x86, 8 B/block), DXT5
+/// (0x88, 16 B/block) and A8R8G8B8 (0xA5, 4 B/pixel). DXT3/DXT4, when they
+/// appear, use the same 16-byte blocks as DXT5, so any non-ARGB code falls
+/// back to a 16-byte block.
 fn bytes_per_block(format: u8) -> usize {
     match format {
         FORMAT_DXT1 => 8,
-        FORMAT_DXT5 => 16,
-        _ => 0,
+        FORMAT_ARGB => 0,
+        _ => 16,
     }
 }
 
@@ -296,6 +304,25 @@ fn mip_level_size(meta: &RecordMeta, level: u32) -> usize {
 /// Total number of bytes the mip chain of one face occupies.
 fn mip_chain_size(meta: &RecordMeta) -> usize {
     (0..meta.mips).map(|l| mip_level_size(meta, l)).sum()
+}
+
+/// Slot (allocation) size of an A8R8G8B8 (0xA5) streamtex record.
+///
+/// Unlike DXT records (128-byte aligned slots), PS3 reserves a dedicated,
+/// larger allocation for uncompressed ARGB textures. The sizes below were
+/// measured on airport_test_03 by validating the extracted mip 0 against the
+/// embedded low-res thumbnail in `.textures`:
+///   - 1024x512, 11 mips -> 4 MiB
+///   - 128x128,   8 mips -> 130,560
+/// For unobserved combinations we fall back to the 128-byte aligned chain so
+/// the cursor still advances sanely.
+fn a5_slot_size(meta: &RecordMeta) -> usize {
+    let chain = mip_chain_size(meta);
+    match (meta.width, meta.height, meta.mips) {
+        (1024, 512, 11) => 4 * 1024 * 1024,
+        (128, 128, 8) => 130_560,
+        _ => (chain + 127) & !127,
+    }
 }
 
 /// Size of a volume texture's data region on disc.
@@ -518,15 +545,27 @@ pub fn extract_streamtex_textures(
                 (bytes, slot)
             }
         } else {
-            // Sequential streamtex entries are packed back-to-back with no
-            // alignment padding: each texture occupies exactly its full mip
-            // chain (mips concatenated), six chains per cubemap face.
+            // Sequential streamtex entries are NOT packed back-to-back.
+            // Observations from airport_test_03 (PS3) validated against the
+            // embedded low-res thumbnails in .textures:
+            //   - DXT1/DXT5 (0x86/0x88): each record occupies a slot of
+            //     align128(mip_chain_size); a cubemap reserves one such slot
+            //     per face. The pixel data sits at the start of each slot.
+            //   - A8R8G8B8 (0xA5): each record occupies a dedicated
+            //     allocation slot (see a5_slot_size) whose start holds the
+            //     linear BGRA mip chain. The slot size only controls the
+            //     cursor advance for the next record.
             let chain = mip_chain_size(&meta);
             let face_count = if meta.is_cubemap { 6 } else { 1 };
-            let slot_total = chain * face_count;
-            let mut bytes = Vec::with_capacity(slot_total);
+            let slot = if meta.format == 0xA5 {
+                a5_slot_size(&meta)
+            } else {
+                (chain + 127) & !127
+            };
+            let slot_total = slot * face_count;
+            let mut bytes = Vec::with_capacity(chain * face_count);
             'faces: for face in 0..face_count {
-                let face_start = start + face * chain;
+                let face_start = start + face * slot;
                 let Some(face_end) = face_start.checked_add(chain) else {
                     break 'faces;
                 };
@@ -535,7 +574,7 @@ pub fn extract_streamtex_textures(
                 }
                 bytes.extend_from_slice(&streamtex_bytes[face_start..face_end]);
             }
-            if bytes.len() != slot_total {
+            if bytes.len() != chain * face_count {
                 break;
             }
             let header = create_dds_header(
@@ -652,10 +691,11 @@ pub fn create_dds_header(
             dw_alpha_bit_mask = 0xFF000000;
         }
         _ => {
-            // Unknown console format: fall back to DXT1 so the file still opens.
+            // Any other non-ARGB console format is a 16-byte-block DXT variant
+            // (DXT3/DXT4/DXT5); tag it DXT5 so the file still opens.
             dw_flags |= DDSD_LINEARSIZE;
             ddspf_dw_flags |= DDPF_FOURCC;
-            dw_four_cc.copy_from_slice(b"DXT1");
+            dw_four_cc.copy_from_slice(b"DXT5");
         }
     }
 
@@ -667,7 +707,7 @@ pub fn create_dds_header(
         FORMAT_DXT1 => width.div_ceil(4) * height.div_ceil(4) * 8,
         FORMAT_DXT5 => width.div_ceil(4) * height.div_ceil(4) * 16,
         FORMAT_ARGB => width * 4,
-        _ => width.div_ceil(4) * height.div_ceil(4) * 8,
+        _ => width.div_ceil(4) * height.div_ceil(4) * 16,
     };
     header[20..24].copy_from_slice(&pitch_or_linear_size.to_le_bytes());
     header[28..32].copy_from_slice(&mipmaps.to_le_bytes());

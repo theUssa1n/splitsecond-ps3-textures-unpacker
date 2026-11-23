@@ -36,6 +36,7 @@ File header (absolute offsets):
 Record (36 bytes):
   +0x04  texture id (u32)
   +0x0C  format (u8)   0x86 = DXT1, 0x88 = DXT5, 0xA5 = A8R8G8B8
+                       (any other non-ARGB code = 16-byte-block DXT variant)
   +0x0D  mip count (u8, includes the top level)
   +0x0E  dimension marker (u8)   2 = 2D, 3 = 3D (volume)
   +0x0F  cubemap flag (u8)   1 = six faces
@@ -98,15 +99,26 @@ derived from the texture that does match.
 
 Streamtex data
 --------------
-The .streamtex file is raw texture data with no headers. Model B entries
-carry absolute offsets into it (128-byte whole-chain slot per face). Model A
-(track) files are read sequentially in catalog order and are packed
-back-to-back with NO alignment padding: each texture occupies exactly its
-full mip chain (mips concatenated), six contiguous chains per cubemap face.
-The 128-byte slot rule above applies only to embedded data sections, not to
-sequential streamtex layout. Verified on airport_test_03: the raw cumulative
-offsets reproduce the on-disc data (visual confirmation plus offset checks),
-and the 1.6 MB tail of the .streamtex file is trailing padding.
+The .streamtex file is raw texture data with no headers (no length prefix, no
+DDS magic). Two selection schemes exist:
+
+Model B (vehicle/global files): entries carry ABSOLUTE offsets into the file;
+each record occupies a 128-byte whole-chain slot per face.
+
+Model A (track files): entries are read sequentially in catalog order. The
+cursor advances by the record's slot:
+  - DXT (0x86/0x88): slot = align128(mip_chain_size), one slot per cubemap
+    face (the same 128-byte slot rule as the embedded data sections).
+  - A8R8G8B8 (0xA5): a dedicated, larger allocation slot. Observed sizes on
+    airport_test_03: 4 MiB for 1024x512 (11 mips) and 130,560 for 128x128
+    (8 mips). The pixel data starts exactly at the slot start; the slot size
+    only moves the cursor to the next record.
+
+Verified on airport_test_03 (499 texture pairs): both A5 records were validated
+by down-sampling their extracted mip 0 and comparing it byte-wise to the
+embedded low-res thumbnail (mean abs diff ~2.2 and ~4.5 out of 255). The DXT
+records following each A5 also land exactly on their observed offsets with the
+same cursor, so the slot rule holds across the whole file.
 Extraction is byte-exact against Musclecar_09.streamtex (SHA256 of the sliced
 payloads matches).
 

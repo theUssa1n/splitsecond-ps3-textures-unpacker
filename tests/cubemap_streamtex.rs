@@ -3,9 +3,10 @@ use unpack_ss_utils::{
 };
 
 /// Builds a minimal PS3 .textures with two sequential streamtex entries. The
-/// cubemap has two 4x4 DXT1 mips; the stream data is packed back-to-back with
-/// no padding, so each face is just the concatenated mip chain (16 bytes) and
-/// the plane follows all six face slots.
+/// cubemap has two 4x4 DXT1 mips. Each DXT record occupies a 128-byte aligned
+/// slot (align128(mip chain) = align128(16) = 128); a cubemap reserves one
+/// such slot per face, so the six faces sit at stride 128 and the plane's slot
+/// follows after face 5.
 fn make_textures() -> Vec<u8> {
     // Header scalars occupy [0x10, 0x28). Records start right after, at header
     // offset 40, so they never overwrite the header fields.
@@ -70,14 +71,15 @@ fn streamtex_cubemap_sequential_face_slots() {
     let t = make_textures();
     let view = make_textures_view(&t).expect("parse");
 
-    // stream: each cubemap face is the 16-byte mip chain (mip0 = 8 bytes,
-    // mip1 = 8 bytes); six faces = 96 bytes, then the plane starts at 96.
-    let mut s = vec![0u8; 96 + 16];
+    // stream: each cubemap face occupies a 128-byte slot (mip0 = 8 bytes at
+    // the slot start, mip1 = 8 bytes right after); six faces span 768 bytes,
+    // then the plane's slot starts at 768.
+    let mut s = vec![0u8; 768 + 128];
     for f in 0..6 {
-        s[f * 16] = (f + 1) as u8;          // face f, mip0
-        s[f * 16 + 8] = (f + 11) as u8;     // face f, mip1
+        s[f * 128] = (f + 1) as u8;          // face f, mip0
+        s[f * 128 + 8] = (f + 11) as u8;     // face f, mip1
     }
-    s[96] = 0xEE;
+    s[768] = 0xEE;
 
     let out = extract_streamtex_textures(&view, &s).expect("extract");
     assert_eq!(out.len(), 2);
@@ -88,12 +90,12 @@ fn streamtex_cubemap_sequential_face_slots() {
     let payload = &cube[128..];
     let mut expected = Vec::new();
     for f in 0..6 {
-        expected.extend_from_slice(&s[f * 16..f * 16 + 8]);
-        expected.extend_from_slice(&s[f * 16 + 8..f * 16 + 16]);
+        expected.extend_from_slice(&s[f * 128..f * 128 + 8]);
+        expected.extend_from_slice(&s[f * 128 + 8..f * 128 + 16]);
     }
     assert_eq!(payload, &expected[..], "mips must be the raw per-face chain");
 
     // The plane follows the cubemap's six face slots.
     let plane = &out[1].bytes;
-    assert_eq!(&plane[128..], &s[96..104]);
+    assert_eq!(&plane[128..], &s[768..776]);
 }
