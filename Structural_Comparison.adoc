@@ -1,0 +1,295 @@
+= Split/Second PS3 .textures — Verified Structure
+:toc: macro
+:toclevels: 2
+:sectnums:
+:source-highlighter: rouge
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
+[NOTE]
+====
+Reverse-engineered structure of the PS3 `.textures` container. This tool is *PS3-only*.
+All values are *big-endian*.
+====
+
+toc::[]
+
+== Catalog Layouts
+
+Two catalog layouts exist. Both were verified byte-exact on 17 files.
+
+=== Model A — track files
+
+Examples: `docks`, `Downtown`, ...
+
+* `catalog_count == record_count`.
+* Catalogs are interleaved *pairs*, one pair per texture:
+** catalog `2k` = *embedded* variant (`size > 0`, one entry)
+** catalog `2k+1` = *streamtex* variant (`size == 0`, one entry)
+* Records are interleaved the same way.
+* Streamtex entry data offsets are all zero → data is packed sequentially in the `.streamtex` file.
+
+=== Model B — vehicle/global files
+
+Examples: `Musclecar_09`, `Bootup`, `Generic`, ...
+
+* `catalog_count == 2`.
+* Catalog 0 = *ALL* embedded textures. `size` is the total embedded data; there are many entries, and their data offsets are relative to the section start.
+* Catalog 1 = *ALL* streamtex textures. `size == 0`; entry data offsets are *ABSOLUTE* offsets into the `.streamtex` file (e.g. `0` and `2796288`).
+* Records are grouped: embedded records first, then streamtex records.
+* `pt_count` is `0` for files without streamtex entries (`pt_offset` is then `0` as well).
+
+=== At a glance
+
+[cols="2,4,4",options="header"]
+|===
+| | Model A (track files) | Model B (vehicle/global files)
+
+| Examples
+| `docks`, `Downtown`, ...
+| `Musclecar_09`, `Bootup`, `Generic`, ...
+
+| Catalog count
+| equals record count
+| `2`
+
+| Catalog arrangement
+| interleaved pairs: `2k` = embedded, `2k+1` = streamtex
+| catalog 0 = all embedded, catalog 1 = all streamtex
+
+| Embedded catalog
+| one entry, `size > 0`
+| many entries, `size` = total embedded data, offsets relative to section start
+
+| Streamtex catalog
+| one entry, `size == 0`
+| many entries, `size == 0`, offsets absolute into `.streamtex`
+
+| Record order
+| interleaved the same way as the catalogs
+| embedded first, then streamtex
+
+| Streamtex data offsets
+| all zero; data packed sequentially in `.streamtex`
+| absolute offsets into `.streamtex`
+|===
+
+== Layout
+
+=== File header
+
+Absolute offsets. The header spans `[0x10, 0x10 + table_size)`.
+
+[cols="1,2,6",options="header"]
+|===
+| Offset | Field | Description
+
+| `0x00` | magic | `"TEXS"`
+| `0x04` | version | `12`
+| `0x08` | platform | `1`
+| `0x0C` | `table_size` | Header spans `[0x10, 0x10 + table_size)`
+| `0x10` | `record_count` | Number of 36-byte records
+| `0x14` | `records_offset` | Header-relative
+| `0x18` | `pt_count` | 8-byte entries, all zero on disc (= streamtex count in model B, `0` when there are none)
+| `0x1C` | `pt_offset` | Header-relative
+| `0x20` | `catalog_count` | Number of 16-byte catalogs
+| `0x24` | `catalogs_offset` | Header-relative
+|===
+
+=== Record (36 bytes)
+
+Offsets are relative to the start of the record.
+
+[cols="1,1,2,6",options="header"]
+|===
+| Offset | Type | Field | Description
+
+| `0x04` | u32 | texture id |
+| `0x0C` | u8 | format | `0x86` = DXT1, `0x88` = DXT5, `0xA5` = A8R8G8B8 (any other non-ARGB code = 16-byte-block DXT variant)
+| `0x0D` | u8 | mip count | Includes the top level
+| `0x0E` | u8 | dimension marker | `2` = 2D, `3` = 3D (volume)
+| `0x0F` | u8 | cubemap flag | `1` = six faces
+| `0x14` | u16 | width |
+| `0x16` | u16 | height |
+| `0x18` | u16 | depth | Slice count, only meaningful when dimension marker is `3`
+|===
+
+=== Catalog (16 bytes)
+
+[cols="1,1,2,6",options="header"]
+|===
+| Offset | Type | Field | Description
+
+| `0x00` | u32 | data section size | `0` for streamtex catalogs
+| `0x08` | u32 | entry count |
+| `0x0C` | u32 | entries offset | Header-relative
+|===
+
+=== Entry (12 bytes)
+
+[cols="1,1,2,6",options="header"]
+|===
+| Offset | Type | Field | Description
+
+| `0x00` | u32 | record offset | Header-relative
+| `0x04` | u32 | PT offset | Header-relative
+| `0x08` | u32 | data offset | Relative to the catalog's data section start. For streamtex catalogs in model B it is an *absolute* `.streamtex` offset
+|===
+
+== Data Section
+
+The data section starts at `0x10 + table_size`.
+
+Catalog `i`'s data starts at:
+
+----
+data_start + sum(sizes of catalogs 0..i-1)
+----
+
+and is `size` bytes of *RAW, header-less* texture data (no length prefix, no DDS magic).
+
+=== Slot rule
+
+Every 2D texture occupies a 128-byte aligned slot per face. Volume textures are the exception, see <<volume-textures>>.
+
+----
+slot               = align128(mip_chain_size)
+non-cubemap region = slot
+cubemap region     = 6 * slot      (six face slots back to back)
+----
+
+Verified examples:
+
+[cols="3,2,2,3",options="header"]
+|===
+| Source | Mip chain size | Slot | Notes
+
+| `docks` catalog 0 | 72 | 128 |
+| `Musclecar` catalog 0 | 184 | 256 | Entries at `0` and `256`, section size `512`
+| `Bootup` entry 0 | 131072 | | Region `131072`
+| `Generic` cubemaps | 10936 | 11008 | Region `66048` (6 × 11008)
+| `bodyPaint` | 2796216 | 2796288 |
+| `Musclecar` streamtex slots | 2796216 | 2796288 | File = `2 * 2796288` exactly
+|===
+
+[#volume-textures]
+== Volume (3D) Textures
+
+Textures with dimension marker `3` (particle effects that animate through a depth slab, e.g. smoke puffs and speed lines) store their mip chain differently:
+
+* Every mip level is aligned to 128 bytes *individually*, not just the whole chain.
+* Within a level, the depth slices are *interleaved in groups of four*.
+
+[source]
+----
+region_size = sum over levels of align128(level_size)
+level_size  = blocks_per_slice(w >> l, h >> l) * depth(l) * block_bytes
+depth(l)    = max(depth >> l, 1)
+----
+
+Block `wi` of slice `s` sits at:
+
+[source]
+----
+(s / 4) * blocks_per_slice * 4 + wi * 4 + (s % 4)
+----
+
+=== Verification
+
+Verified byte-exact against the PC build: the 128x128x64 DXT1 texture (id `E8B5634B`) reassembles with *zero differing bytes* once the swizzle is undone.
+
+[cols="2,2,3",options="header"]
+|===
+| PS3 region | PC payload | Difference
+
+| 599552 bytes | 599200 bytes | Per-level 128-byte padding
+|===
+
+[WARNING]
+====
+PC payloads are not always a usable byte reference.
+
+* The 256x256x16 texture (id `03D53EF3`) has genuinely different pixel content between the PC and PS3 builds (its block histogram does not match).
+* The 2D texture `17C4AA38` differs by ~31% across builds in the same way.
+
+The layout rule above was derived from the texture that does match.
+====
+
+== Streamtex Data
+
+The `.streamtex` file is raw texture data with *no headers* (no length prefix, no DDS magic). Two selection schemes exist.
+
+=== Model B — vehicle/global files
+
+Entries carry *ABSOLUTE* offsets into the file. Each record occupies a 128-byte whole-chain slot per face.
+
+=== Model A — track files
+
+Entries are read *sequentially* in catalog order. The cursor advances by the record's slot:
+
+[cols="2,5",options="header"]
+|===
+| Format | Slot
+
+| DXT (`0x86` / `0x88`)
+| `align128(mip_chain_size)`, one slot per cubemap face (the same 128-byte slot rule as the embedded data sections).
+
+| A8R8G8B8 (`0xA5`)
+| A dedicated, larger allocation slot. The pixel data starts exactly at the slot start; the slot size only moves the cursor to the next record.
+|===
+
+Observed A8R8G8B8 slot sizes on `airport_test_03`:
+
+[cols="2,2,2",options="header"]
+|===
+| Dimensions | Mips | Slot size
+
+| 1024x512 | 11 | 4 MiB
+| 128x128 | 8 | 130,560 bytes
+|===
+
+=== Verification
+
+* `airport_test_03` (499 texture pairs): both `0xA5` records were validated by down-sampling their extracted mip 0 and comparing it byte-wise to the embedded low-res thumbnail (mean abs diff ~2.2 and ~4.5 out of 255).
+* The DXT records following each `0xA5` also land exactly on their observed offsets with the same cursor, so the slot rule holds across the whole file.
+* Extraction is byte-exact against `Musclecar_09.streamtex` (SHA256 of the sliced payloads matches).
+
+== Names Table
+
+Located at:
+
+----
+data_start + sum(ALL catalog sizes)
+----
+
+Starts with the marker `"C2NM"`, followed by entries until EOF:
+
+----
+[id u32][name_len u32][name bytes]
+----
+
+[NOTE]
+====
+The marker bytes are `"C2NM"` on PS3 (BE) vs `"MN2C"` on PC (LE) — the same constant.
+====
+
+== Extraction
+
+Embedded::
+Slice each entry's mip chain (computed from the record metadata) out of its catalog section and prepend a 128-byte DDS header. Cubemaps get `DDSCAPS2_CUBEMAP | ALLFACES` with the six face chains packed back to back.
+
+Volume (3D)::
+Undo the 4-slice interleave, stack the slices vertically into a flat 2D image (`width x height * depth`) and prepend a DDS header marked as a plain 2D texture with mip count `1`. A 3D mip chain has no usable 2D equivalent, so *only mip 0 is kept*. The flat strip is what image editors can open; the on-disc swizzle is not something a viewer understands.
+
+Streamtex::
+Same as embedded, but the data comes from the `.streamtex` file using the entry offsets (model B) or sequential slots (model A). Volume textures use the per-level aligned region size instead of the plain chain size.
+
+[WARNING]
+====
+PC (little-endian, `"SXET"`) files are rejected explicitly.
+====
